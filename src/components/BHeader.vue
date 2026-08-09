@@ -18,6 +18,9 @@
         <li class="nav-item">
           <router-link to="/bookcount" class="nav-link" active-class="active">Book Count</router-link>
         </li>
+        <li class="nav-item">
+          <router-link to="/WeatherCheck" class="nav-link" active-class="active">Get Weather</router-link>
+        </li>
         <li class="nav-item" v-if="!isAuthenticated">
           <router-link to="/login" class="nav-link" active-class="active">Login</router-link>
         </li>
