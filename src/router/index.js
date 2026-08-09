@@ -5,6 +5,8 @@ import LoginView from '../views/LoginView.vue'
 import AccessDeniedView from '../views/AccessDeniedView.vue'
 import FirebaseSigninView from '../views/FirebaseSigninView.vue'
 import FirebaseRegisterView from '../views/FirebaseRegisterView.vue'
+import AddBookView from '../views/AddBookView.vue'
+import GetBookCountView from '../views/GetBookCountView.vue'
 import { isAuthenticated } from '../auth.js'
 
 const routes = [
@@ -17,6 +19,18 @@ const routes = [
     path: '/about',
     name: 'About',
     component: AboutView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/addbook',
+    name: 'AddBook',
+    component: AddBookView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/bookcount',
+    name: 'BookCount',
+    component: GetBookCountView,
     meta: { requiresAuth: true }
   },
   {
