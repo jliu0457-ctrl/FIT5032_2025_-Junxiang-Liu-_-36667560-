@@ -76,6 +76,24 @@ const reviewCount = computed(() => ratings.value.length)
 
 const averageDisplay = computed(() => averageRating.value.toFixed(1))
 
+// --- Keyboard support (BR E.3): arrows pick a star, Enter/Space submits ---
+function onKeydown(e) {
+  if (!canRate.value) return
+  if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    const next = Math.min(5, (hoverStar.value || userRating.value || 0) + 1)
+    hoverStar.value = next
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    const prev = Math.max(1, (hoverStar.value || userRating.value || 0) - 1)
+    hoverStar.value = prev
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    const stars = hoverStar.value || userRating.value
+    if (stars) submitRating(stars)
+  }
+}
+
 // --- Submit / update the user's rating (BR C.3) ---
 async function submitRating(stars) {
   if (!canRate.value) return
@@ -100,8 +118,18 @@ async function submitRating(stars) {
 
 <template>
   <div class="star-rating-wrapper text-center">
-    <!-- Clickable stars (BR C.3) -->
-    <div class="star-rating mb-2">
+    <!-- Clickable stars (BR C.3) — keyboard accessible (BR E.3) -->
+    <div class="star-rating mb-2"
+         role="slider"
+         aria-label="Rating"
+         :aria-valuemin="1"
+         aria-valuemax="5"
+         :aria-valuenow="userRating || 0"
+         :aria-valuetext="userRating ? `${userRating} out of 5 stars` : 'Not rated'"
+         :tabindex="canRate ? 0 : -1"
+         :aria-disabled="canRate ? 'false' : 'true'"
+         @keydown="onKeydown"
+    >
       <i
         v-for="star in 5"
         :key="star"
@@ -111,10 +139,7 @@ async function submitRating(stars) {
           'bi-star': star > (hoverStar || userRating),
           'active': star <= (hoverStar || userRating)
         }"
-        :tabindex="canRate ? 0 : -1"
-        role="button"
-        :aria-label="`Rate ${star} out of 5 stars`"
-        :aria-disabled="canRate ? 'false' : 'true'"
+        :aria-hidden="true"
         @click="submitRating(star)"
         @mouseenter="hoverStar = star"
         @mouseleave="hoverStar = 0"

@@ -5,7 +5,7 @@
      BR (D.1): Booking data lives in Firestore (live via onSnapshot).
      BR (C.4): All text rendered via {{ }} interpolation -->
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { Modal } from 'bootstrap'
 import FullCalendar from '@fullcalendar/vue3'
 import dayGridPlugin from '@fullcalendar/daygrid'
@@ -18,10 +18,67 @@ import '../assets/fc/packages/daygrid/src/index.scss'
 import '../assets/fc/packages/timegrid/src/index.scss'
 import { collection, onSnapshot } from 'firebase/firestore'
 import { firebaseConfigured, auth, db } from '../firebase.js'
-import { userName } from '../stores/auth.js'
+import { state, userName } from '../stores/auth.js'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 // --- Lambda API base URL (AWS Function URL, see README-SETUP.md) ---
 const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL || ''
+
+// --- Build a .ics calendar file for a booking (BR D.2: email attachment) ---
+function buildICS({ date, startTime, endTime, practitioner }) {
+  const fmt = (dt) => `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}${String(dt.getDate()).padStart(2, '0')}`
+  const [sh, sm] = startTime.split(':').map(Number)
+  const [eh, em] = endTime.split(':').map(Number)
+  const start = new Date(`${date}T00:00:00`)
+  const end = new Date(start)
+  start.setHours(sh, sm); end.setHours(eh, em)
+  const uid = `booking-${date}-${startTime}-${Date.now()}@ihc`
+  const ics = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Indigenous Health Connect//EN',
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTART:${fmt(start)}T${startTime.replace(':', '')}00`,
+    `DTEND:${fmt(end)}T${endTime.replace(':', '')}00`,
+    `SUMMARY:${practitioner}`,
+    'DESCRIPTION:Appointment with Indigenous Health Connect',
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ].join('\r\n')
+  return ics
+}
+
+// --- Send the booking-confirmation email via the Lambda /email route (BR D.2) ---
+async function sendConfirmationEmail(booking, ics) {
+  if (!LAMBDA_URL) return
+  try {
+    const idToken = await auth.currentUser.getIdToken()
+    const res = await fetch(`${LAMBDA_URL}/email`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`
+      },
+      body: JSON.stringify({
+        to: auth.currentUser.email,
+        subject: 'Appointment Confirmed — Indigenous Health Connect',
+        text: `Hi ${userName.value},\n\nYour appointment is confirmed:\n  Date: ${booking.date}\n  Time: ${booking.startTime} – ${booking.endTime}\n  Practitioner: ${booking.practitioner}\n\nA calendar invite (.ics) is attached — add it to your calendar.\n\nIndigenous Health Connect`,
+        attachment: {
+          filename: `appointment-${booking.date}.ics`,
+          contentBase64: btoa(unescape(encodeURIComponent(ics)))
+        }
+      })
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      console.warn('Confirmation email not sent:', data?.message || res.status)
+    }
+  } catch (e) {
+    console.warn('Confirmation email not sent:', e.message)
+  }
+}
 
 // --- Practitioner options (BR F.1-1) ---
 const practitioners = [
@@ -90,6 +147,32 @@ const bookingError = ref('')
 const bookingBusy = ref(false)
 const successMessage = ref('')
 
+// BR (F.1-4): persist the booking draft to localStorage — survives offline /
+// accidental refresh; restored when the modal opens (offline feature #2).
+const DRAFT_KEY = 'ihc_booking_draft'
+function saveDraft() {
+  if (selectedRange.value) {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      range: selectedRange.value,
+      practitioner: selectedPractitioner.value
+    }))
+  } else {
+    localStorage.removeItem(DRAFT_KEY)
+  }
+}
+function restoreDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) return
+    const { range, practitioner } = JSON.parse(raw)
+    if (range && range.date && range.startTime) {
+      selectedRange.value = range
+      selectedPractitioner.value = practitioner || practitioners[0]
+    }
+  } catch { /* ignore corrupted draft */ }
+}
+watch([selectedRange, selectedPractitioner], saveDraft)
+
 const modalEl = ref(null)
 let modalInstance = null
 
@@ -114,6 +197,9 @@ function handleSelect(selectInfo) {
   if (modalInstance) modalInstance.show()
   selectInfo.view.calendar.unselect() // clear the selection highlight
 }
+
+// (BR F.1-4) Restore a persisted booking draft on mount
+onMounted(() => restoreDraft())
 
 // Booking is only allowed in the time-grid views (week/day).
 // NOTE: FullCalendar may pass an info object whose `view` is not yet set
@@ -149,6 +235,11 @@ async function confirmBooking() {
       if (modalInstance) modalInstance.hide()
       successMessage.value = 'Your appointment has been booked successfully!'
       setTimeout(() => { successMessage.value = '' }, 5000)
+      // BR (F.1-4): clear the saved draft — this booking is done
+      localStorage.removeItem(DRAFT_KEY)
+      // BR (D.2): send a confirmation email with a .ics attachment (best effort)
+      const booking = { date: r.date, startTime: r.startTime, endTime: r.endTime, practitioner: selectedPractitioner.value }
+      sendConfirmationEmail(booking, buildICS(booking))
       return
     }
 
@@ -174,6 +265,11 @@ async function confirmBooking() {
     if (modalInstance) modalInstance.hide()
     successMessage.value = 'Your appointment has been booked successfully!'
     setTimeout(() => { successMessage.value = '' }, 5000)
+    // BR (F.1-4): clear the saved draft — this booking is done
+    localStorage.removeItem(DRAFT_KEY)
+    // BR (D.2): send a confirmation email with a .ics attachment (best effort)
+    const booking = { date: selectedRange.value.date, startTime: selectedRange.value.startTime, endTime: selectedRange.value.endTime, practitioner: selectedPractitioner.value }
+    sendConfirmationEmail(booking, buildICS(booking))
   } catch {
     bookingError.value = 'Network error: unable to reach the booking service. Please try again.'
   } finally {
@@ -213,6 +309,130 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-AU', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+// ============================================================
+// BR (D.3): Interactive table #2 — My Appointment History
+// (sorting + single-column search + 10 rows per page)
+// ============================================================
+const historySortColumn = ref('date')
+const historySortDir = ref('desc')
+const historySearchQuery = ref('')
+const historySearchColumn = ref('practitioner')
+const historyPage = ref(1)
+const ROWS_PER_PAGE = 10
+
+// The rows available to the history table (this user's bookings)
+const historyRows = computed(() =>
+  firebaseConfigured
+    ? bookings.value.filter(b => b.bookedByUid === state.currentUser?.uid)
+    : bookings.value
+)
+
+// Single-column search filter
+const historyFiltered = computed(() => {
+  const q = historySearchQuery.value.toLowerCase().trim()
+  if (!q) return historyRows.value
+  return historyRows.value.filter(b =>
+    String(b[historySearchColumn.value] ?? '').toLowerCase().includes(q)
+  )
+})
+
+// Sorting (date sorts as real dates, others as strings)
+const historySorted = computed(() => {
+  const arr = [...historyFiltered.value]
+  const col = historySortColumn.value
+  const dir = historySortDir.value === 'asc' ? 1 : -1
+  arr.sort((a, b) => {
+    if (col === 'date') {
+      return (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) * dir
+    }
+    const va = String(a[col] ?? '').toLowerCase()
+    const vb = String(b[col] ?? '').toLowerCase()
+    return (va < vb ? -1 : va > vb ? 1 : 0) * dir
+  })
+  return arr
+})
+
+const historyTotalPages = computed(() =>
+  Math.max(1, Math.ceil(historySorted.value.length / ROWS_PER_PAGE))
+)
+const historyPaginated = computed(() => {
+  const start = (historyPage.value - 1) * ROWS_PER_PAGE
+  return historySorted.value.slice(start, start + ROWS_PER_PAGE)
+})
+const historyShowingFrom = computed(() =>
+  historySorted.value.length === 0 ? 0 : (historyPage.value - 1) * ROWS_PER_PAGE + 1
+)
+const historyShowingTo = computed(() =>
+  Math.min(historyPage.value * ROWS_PER_PAGE, historySorted.value.length)
+)
+
+function toggleHistorySort(column) {
+  if (historySortColumn.value === column) {
+    historySortDir.value = historySortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    historySortColumn.value = column
+    historySortDir.value = 'asc'
+  }
+}
+
+// BR (E.3): keyboard-triggerable sort (Enter/Space on a focused header)
+function onHistorySortKeydown(column, e) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    toggleHistorySort(column)
+  }
+}
+function historySortArrow(column) {
+  if (historySortColumn.value !== column) return ''
+  return historySortDir.value === 'asc' ? '▲' : '▼'
+}
+
+// Reset to page 1 when search changes
+watch([historySearchQuery, historySearchColumn], () => { historyPage.value = 1 })
+
+// ============================================================
+// BR (E.4): Data export — CSV & PDF of the current user's bookings
+// ============================================================
+function myBookings() {
+  if (!firebaseConfigured) return bookings.value
+  // In Firebase mode, only export this user's own bookings
+  const uid = state?.currentUser?.uid
+  return bookings.value.filter(b => !uid || b.bookedByUid === uid)
+}
+
+function exportBookingsCSV() {
+  const rows = myBookings()
+  const header = ['Date', 'Start', 'End', 'Practitioner']
+  const lines = [header.join(',')]
+  for (const b of rows) {
+    lines.push([b.date, b.startTime, b.endTime, `"${b.practitioner}"`].join(','))
+  }
+  // UTF-8 BOM (﻿) so Excel opens the Chinese text correctly (no garbled characters)
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'my-appointments.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportBookingsPDF() {
+  const rows = myBookings()
+  const doc = new jsPDF()
+  doc.setFontSize(16)
+  doc.text('My Appointments — Indigenous Health Connect', 14, 16)
+  doc.setFontSize(10)
+  doc.setTextColor(100)
+  doc.text(`Exported ${new Date().toLocaleDateString('en-AU')}`, 14, 23)
+  autoTable(doc, {
+    startY: 28,
+    head: [['Date', 'Start', 'End', 'Practitioner']],
+    body: rows.map(b => [b.date, b.startTime, b.endTime, b.practitioner])
+  })
+  doc.save('my-appointments.pdf')
+}
+
 // --- FullCalendar options (BR F.1-1) ---
 const calendarOptions = {
   plugins: [dayGridPlugin, timeGridPlugin, interactionPlugin],
@@ -249,12 +469,14 @@ const calendarOptions = {
         </h2>
         <p class="text-muted mb-0">Welcome back, {{ userName }}. Manage your appointments here.</p>
       </div>
-      <!-- Export buttons (BR E.4 — enabled in Phase 3) -->
+      <!-- Export buttons (BR E.4) -->
       <div class="d-flex gap-2">
-        <button class="btn btn-outline-secondary btn-sm" disabled title="CSV export — coming soon">
+        <button class="btn btn-outline-secondary btn-sm" @click="exportBookingsCSV"
+                title="Export your bookings as CSV">
           <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
         </button>
-        <button class="btn btn-outline-secondary btn-sm" disabled title="PDF export — coming soon">
+        <button class="btn btn-outline-secondary btn-sm" @click="exportBookingsPDF"
+                title="Export your bookings as PDF">
           <i class="bi bi-file-earmark-pdf"></i> Export PDF
         </button>
       </div>
@@ -271,8 +493,8 @@ const calendarOptions = {
           <div class="card-body">
 
             <!-- Success Alert -->
-            <div v-if="successMessage" class="alert alert-success alert-dismissible fade show" role="alert">
-              <i class="bi bi-check-circle-fill"></i> {{ successMessage }}
+            <div v-if="successMessage" class="alert alert-success alert-dismissible fade show" role="status" aria-live="polite">
+              <i class="bi bi-check-circle-fill" aria-hidden="true"></i> {{ successMessage }}
               <button type="button" class="btn-close" @click="successMessage = ''" aria-label="Close"></button>
             </div>
 
@@ -341,31 +563,83 @@ const calendarOptions = {
           <p class="mb-0">No appointments booked yet. Use the calendar above to schedule your first appointment.</p>
         </div>
 
-        <!-- Booking list table -->
-        <div v-else class="table-responsive">
-          <table class="table table-hover align-middle">
-            <thead class="table-light">
-              <tr>
-                <th>Date</th>
-                <th>Time</th>
-                <th>Practitioner</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="booking in bookings" :key="booking.id">
-                <td>{{ formatDate(booking.date) }}</td>
-                <td>{{ booking.startTime }} – {{ booking.endTime }}</td>
-                <td>{{ booking.practitioner }}</td>
-                <td>
-                  <button class="btn btn-outline-danger btn-sm" @click="cancelBooking(booking.id)"
-                          title="Cancel this appointment">
-                    <i class="bi bi-trash-fill"></i> Cancel
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- BR (D.3): Interactive table — sortable, single-column search, 10/page -->
+        <div v-else>
+          <!-- Search bar (single column) -->
+          <div class="input-group mb-3" style="max-width: 420px;">
+            <select v-model="historySearchColumn" class="form-select" style="max-width: 9rem;" aria-label="Search column">
+              <option value="practitioner">Practitioner</option>
+              <option value="date">Date</option>
+              <option value="startTime">Start</option>
+              <option value="endTime">End</option>
+            </select>
+            <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+            <input
+              v-model="historySearchQuery"
+              type="text"
+              class="form-control"
+              :placeholder="`Search by ${historySearchColumn}...`"
+              aria-label="Search bookings"
+            />
+          </div>
+
+          <div class="table-responsive">
+            <table class="table table-hover align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th class="sortable-header" tabindex="0" role="button"
+                      @click="toggleHistorySort('date')" @keydown="onHistorySortKeydown('date', $event)">
+                    Date <span class="sort-arrow" aria-hidden="true">{{ historySortArrow('date') }}</span>
+                  </th>
+                  <th class="sortable-header" tabindex="0" role="button"
+                      @click="toggleHistorySort('startTime')" @keydown="onHistorySortKeydown('startTime', $event)">
+                    Time <span class="sort-arrow" aria-hidden="true">{{ historySortArrow('startTime') }}</span>
+                  </th>
+                  <th class="sortable-header" tabindex="0" role="button"
+                      @click="toggleHistorySort('practitioner')" @keydown="onHistorySortKeydown('practitioner', $event)">
+                    Practitioner <span class="sort-arrow" aria-hidden="true">{{ historySortArrow('practitioner') }}</span>
+                  </th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="booking in historyPaginated" :key="booking.id">
+                  <td>{{ formatDate(booking.date) }}</td>
+                  <td>{{ booking.startTime }} – {{ booking.endTime }}</td>
+                  <td>{{ booking.practitioner }}</td>
+                  <td>
+                    <button class="btn btn-outline-danger btn-sm" @click="cancelBooking(booking.id)"
+                            title="Cancel this appointment">
+                      <i class="bi bi-trash-fill"></i> Cancel
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="historyPaginated.length === 0">
+                  <td colspan="4" class="text-center text-muted py-4">
+                    No bookings match your search.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination (10 rows per page) -->
+          <div class="pagination-wrapper mt-3">
+            <small class="text-muted">
+              Showing {{ historyShowingFrom }}–{{ historyShowingTo }} of {{ historyFiltered.length }} records
+              · Page {{ historyPage }} of {{ historyTotalPages }} ({{ ROWS_PER_PAGE }} rows/page)
+            </small>
+            <div class="btn-group">
+              <button class="btn btn-outline-secondary btn-sm" :disabled="historyPage === 1"
+                      @click="historyPage--">
+                <i class="bi bi-chevron-left"></i> PREV
+              </button>
+              <button class="btn btn-outline-secondary btn-sm" :disabled="historyPage === historyTotalPages"
+                      @click="historyPage++">
+                NEXT <i class="bi bi-chevron-right"></i>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -395,8 +669,8 @@ const calendarOptions = {
               </select>
             </div>
             <!-- Conflict / validation errors from the Lambda function (BR E.1) -->
-            <div v-if="bookingError" class="alert alert-danger" role="alert">
-              <i class="bi bi-exclamation-triangle-fill"></i> {{ bookingError }}
+            <div v-if="bookingError" class="alert alert-danger" role="alert" aria-live="assertive">
+              <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {{ bookingError }}
             </div>
           </div>
           <div class="modal-footer">

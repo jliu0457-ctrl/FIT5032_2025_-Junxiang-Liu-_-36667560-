@@ -84,10 +84,23 @@ function isActive(name) {
             <router-link
               class="nav-link"
               :class="{ active: isActive('Home') }"
+              :aria-current="isActive('Home') ? 'page' : undefined"
               to="/"
               @click="closeNav"
             >
               <i class="bi bi-house-door-fill"></i> Home
+            </router-link>
+          </li>
+          <!-- Clinics map (BR E.2) — public page -->
+          <li class="nav-item">
+            <router-link
+              class="nav-link"
+              :class="{ active: isActive('Clinics') }"
+              :aria-current="isActive('Clinics') ? 'page' : undefined"
+              to="/clinics"
+              @click="closeNav"
+            >
+              <i class="bi bi-geo-alt-fill"></i> Clinics
             </router-link>
           </li>
           <!-- Portal link only visible when logged in -->
@@ -95,6 +108,7 @@ function isActive(name) {
             <router-link
               class="nav-link"
               :class="{ active: isActive('Portal') }"
+              :aria-current="isActive('Portal') ? 'page' : undefined"
               to="/portal"
               @click="closeNav"
             >
@@ -106,6 +120,7 @@ function isActive(name) {
             <router-link
               class="nav-link"
               :class="{ active: isActive('Admin') }"
+              :aria-current="isActive('Admin') ? 'page' : undefined"
               to="/admin"
               @click="closeNav"
             >

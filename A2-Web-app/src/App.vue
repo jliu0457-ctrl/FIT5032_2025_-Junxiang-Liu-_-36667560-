@@ -9,6 +9,9 @@ import { firebaseConfigured } from './firebase.js'
 
 <template>
   <div class="d-flex flex-column min-vh-100">
+    <!-- BR (E.3): Skip-to-content link for keyboard/screen-reader users -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
     <!-- Local demo mode banner (shown until Firebase is configured in .env) -->
     <div v-if="!firebaseConfigured" class="demo-banner" role="status">
       <i class="bi bi-cone-striped me-1"></i>
@@ -20,7 +23,7 @@ import { firebaseConfigured } from './firebase.js'
     <AppNavbar />
 
     <!-- Main Content Area -->
-    <main class="flex-grow-1">
+    <main id="main-content" class="flex-grow-1" tabindex="-1">
       <router-view />
     </main>
 
@@ -37,11 +40,29 @@ import { firebaseConfigured } from './firebase.js'
 main {
   padding-top: 0;
 }
+main:focus {
+  outline: none;
+}
 .demo-banner {
   background-color: #fff3cd;
   color: #664d03;
   text-align: center;
   padding: 0.4rem 1rem;
   font-size: 0.85rem;
+}
+/* BR (E.3): skip link visible on keyboard focus */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 2000;
+  background: #fff;
+  color: var(--ihc-primary);
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+  border-radius: 0 0 0.375rem 0;
+}
+.skip-link:focus {
+  left: 0;
 }
 </style>

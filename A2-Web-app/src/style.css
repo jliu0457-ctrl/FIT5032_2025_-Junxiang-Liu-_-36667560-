@@ -96,6 +96,13 @@ body {
   box-shadow: 0 0 0 0.2rem rgba(214, 40, 40, 0.15) !important;
 }
 
+/* --- BR (E.3): visible keyboard focus indicator (WCAG 2.4.7) --- */
+:focus-visible {
+  outline: 3px solid #1d3557;
+  outline-offset: 2px;
+}
+
+
 /* --- Table sorting indicators --- */
 .sortable-header {
   cursor: pointer;

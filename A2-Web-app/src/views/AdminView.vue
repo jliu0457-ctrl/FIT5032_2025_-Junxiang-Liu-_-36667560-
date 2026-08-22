@@ -3,7 +3,14 @@
      BR (A.2): Responsive metrics cards & interactive user management table
      BR (C.4): All text rendered via {{ }} interpolation -->
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
+import { Chart, registerables } from 'chart.js'
+import { collection, onSnapshot } from 'firebase/firestore'
+import { firebaseConfigured, db } from '../firebase.js'
+
+Chart.register(...registerables)
 
 // ============================================================
 // Mock User Data (BR A.2: 15-20 records with Name, Community, Role, Last Visit)
@@ -49,18 +56,18 @@ function loadBookingStats() {
 }
 
 // ============================================================
-// Search / Filter (BR A.2: Search by Name or Community)
+// Search / Filter (BR D.3: single-column search — pick a column, then type)
 // ============================================================
 const searchQuery = ref('')
+const searchColumn = ref('name')   // which column to search in
 
 const filteredUsers = computed(() => {
   const q = searchQuery.value.toLowerCase().trim()
   if (!q) return allUsers.value
-  return allUsers.value.filter(u =>
-    u.name.toLowerCase().includes(q) ||
-    u.community.toLowerCase().includes(q) ||
-    u.role.toLowerCase().includes(q)
-  )
+  return allUsers.value.filter(u => {
+    const val = String(u[searchColumn.value] ?? '').toLowerCase()
+    return val.includes(q)
+  })
 })
 
 // ============================================================
@@ -75,6 +82,14 @@ function toggleSort(column) {
   } else {
     sortColumn.value = column
     sortDirection.value = 'asc'
+  }
+}
+
+// BR (E.3): keyboard-triggerable sort (Enter/Space on a focused header)
+function onSortKeydown(column, e) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    toggleSort(column)
   }
 }
 
@@ -142,7 +157,126 @@ function roleBadgeClass(role) {
 
 onMounted(() => {
   loadBookingStats()
+  if (firebaseConfigured) {
+    loadBookingsForCharts()
+  }
 })
+
+// ============================================================
+// BR (F.1-2): Interactive charts from Firestore (Chart.js)
+// ============================================================
+const liveBookings = ref([])
+let unsubscribeBookings = null
+const trendChartEl = ref(null)
+const workloadChartEl = ref(null)
+let trendChart = null
+let workloadChart = null
+
+function loadBookingsForCharts() {
+  unsubscribeBookings = onSnapshot(
+    collection(db, 'bookings'),
+    snapshot => {
+      liveBookings.value = snapshot.docs.map(d => d.data())
+      renderCharts()
+    },
+    err => console.warn('Bookings chart sync error:', err.message)
+  )
+}
+onUnmounted(() => {
+  if (unsubscribeBookings) unsubscribeBookings()
+  if (trendChart) trendChart.destroy()
+  if (workloadChart) workloadChart.destroy()
+})
+
+function renderCharts() {
+  if (!trendChartEl.value || !workloadChartEl.value) return
+  const bs = liveBookings.value
+
+  // Chart 1: bookings per week (last 8 weeks)
+  const weeks = []
+  for (let i = 7; i >= 0; i--) {
+    const d = new Date()
+    d.setDate(d.getDate() - (i * 7))
+    const key = d.toISOString().slice(0, 10)
+    const end = new Date(d)
+    end.setDate(end.getDate() + 7)
+    const count = bs.filter(b => {
+      const bd = new Date(b.date + 'T00:00:00')
+      return bd >= d && bd < end
+    }).length
+    weeks.push({ label: key.slice(5), count })
+  }
+  if (trendChart) trendChart.destroy()
+  trendChart = new Chart(trendChartEl.value, {
+    type: 'line',
+    data: {
+      labels: weeks.map(w => w.label),
+      datasets: [{
+        label: 'Appointments',
+        data: weeks.map(w => w.count),
+        borderColor: '#2d6a4f',
+        backgroundColor: 'rgba(45,106,79,0.15)',
+        tension: 0.3,
+        fill: true
+      }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } } }
+  })
+
+  // Chart 2: appointments per practitioner
+  const byPrac = {}
+  bs.forEach(b => { byPrac[b.practitioner] = (byPrac[b.practitioner] || 0) + 1 })
+  const pracNames = Object.keys(byPrac).slice(0, 8)
+  if (workloadChart) workloadChart.destroy()
+  workloadChart = new Chart(workloadChartEl.value, {
+    type: 'bar',
+    data: {
+      labels: pracNames.map(p => p.split(' — ')[0]),
+      datasets: [{
+        label: 'Bookings',
+        data: pracNames.map(p => byPrac[p]),
+        backgroundColor: '#40916c'
+      }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  })
+}
+
+// ============================================================
+// BR (E.4): Export the user directory as CSV / PDF
+// ============================================================
+function exportUsersCSV() {
+  const rows = sortedUsers.value
+  const header = ['ID', 'Name', 'Community', 'Role', 'Last Visit']
+  const lines = [header.join(',')]
+  for (const u of rows) {
+    lines.push([u.id, `"${u.name}"`, `"${u.community}"`, u.role, u.lastVisit].join(','))
+  }
+  // UTF-8 BOM (﻿) so Excel opens the Chinese text correctly (no garbled characters)
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'user-directory.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportUsersPDF() {
+  const rows = sortedUsers.value
+  const doc = new jsPDF()
+  doc.setFontSize(16)
+  doc.text('User Directory — Indigenous Health Connect', 14, 16)
+  doc.setFontSize(10)
+  doc.setTextColor(100)
+  doc.text(`Exported ${new Date().toLocaleDateString('en-AU')} (${rows.length} users)`, 14, 23)
+  autoTable(doc, {
+    startY: 28,
+    head: [['ID', 'Name', 'Community', 'Role', 'Last Visit']],
+    body: rows.map(u => [u.id, u.name, u.community, u.role, u.lastVisit])
+  })
+  doc.save('user-directory.pdf')
+}
 </script>
 
 <template>
@@ -165,7 +299,7 @@ onMounted(() => {
         </div>
       </div>
       <div class="col-12 col-sm-6 col-lg-3">
-        <div class="card stats-card border-0 shadow-sm text-white" style="background-color: var(--ihc-accent);">
+        <div class="card stats-card border-0 shadow-sm text-white" style="background-color: var(--ihc-primary-light);">
           <div class="card-body text-center py-3">
             <i class="bi bi-calendar-check-fill fs-1 mb-2 d-block"></i>
             <h3 class="fw-bold mb-0">{{ activeBookings }}</h3>
@@ -193,26 +327,66 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- ====== Interactive Charts (BR F.1-2: from Firestore) ====== -->
+    <div v-if="firebaseConfigured" class="row g-3 mb-4">
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100">
+          <div class="card-header text-white fw-semibold" style="background-color: var(--ihc-primary);">
+            <i class="bi bi-graph-up me-2"></i>Appointments — Last 8 Weeks
+          </div>
+          <div class="card-body">
+            <div class="chart-wrap"><canvas ref="trendChartEl"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100">
+          <div class="card-header text-white fw-semibold" style="background-color: var(--ihc-primary-light);">
+            <i class="bi bi-bar-chart-fill me-2"></i>Appointments by Practitioner
+          </div>
+          <div class="card-body">
+            <div class="chart-wrap"><canvas ref="workloadChartEl"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ====== User Management Table (BR A.2) ====== -->
     <div class="card shadow-sm">
       <div class="card-header text-white fw-semibold d-flex flex-wrap align-items-center justify-content-between gap-2"
            style="background-color: var(--ihc-primary);">
         <span><i class="bi bi-person-lines-fill me-2"></i>User Management Directory</span>
-        <span class="badge bg-light text-dark">{{ filteredUsers.length }} users</span>
+        <span class="d-flex align-items-center gap-2">
+          <span class="badge bg-light text-dark">{{ filteredUsers.length }} users</span>
+          <!-- BR (E.4): Export the directory (sorted/filtered view) -->
+          <button class="btn btn-outline-light btn-sm" @click="exportUsersCSV" title="Export directory as CSV">
+            <i class="bi bi-file-earmark-spreadsheet"></i> CSV
+          </button>
+          <button class="btn btn-outline-light btn-sm" @click="exportUsersPDF" title="Export directory as PDF">
+            <i class="bi bi-file-earmark-pdf"></i> PDF
+          </button>
+        </span>
       </div>
 
       <div class="card-body">
 
-        <!-- Search / Filter Bar (BR A.2: filter by Name or Community) -->
+        <!-- Search / Filter Bar (BR D.3: single-column search) -->
         <div class="row mb-3">
-          <div class="col-12 col-md-6 col-lg-4">
+          <div class="col-12 col-md-7 col-lg-6">
             <div class="input-group">
+              <!-- Column selector (single-column search) -->
+              <select v-model="searchColumn" class="form-select" style="max-width: 10rem;" aria-label="Search column">
+                <option value="name">Name</option>
+                <option value="community">Community</option>
+                <option value="role">Role</option>
+                <option value="lastVisit">Last Visit</option>
+              </select>
               <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
               <input
                 v-model="searchQuery"
                 type="text"
                 class="form-control"
-                placeholder="Search by Name, Community, or Role..."
+                :placeholder="`Search by ${searchColumn}...`"
                 aria-label="Search users"
               />
               <button
@@ -238,21 +412,25 @@ onMounted(() => {
             <thead class="table-light">
               <tr>
                 <th>#</th>
-                <!-- BR (A.2): Sortable column — Name -->
-                <th class="sortable-header" @click="toggleSort('name')">
-                  Name <span class="sort-arrow">{{ sortArrow('name') }}</span>
+                <!-- BR (A.2/D.3): Sortable column — Name (BR E.3: keyboard accessible) -->
+                <th class="sortable-header" tabindex="0" role="button"
+                    @click="toggleSort('name')" @keydown="onSortKeydown('name', $event)">
+                  Name <span class="sort-arrow" aria-hidden="true">{{ sortArrow('name') }}</span>
                 </th>
-                <!-- BR (A.2): Sortable column — Community -->
-                <th class="sortable-header" @click="toggleSort('community')">
-                  Community <span class="sort-arrow">{{ sortArrow('community') }}</span>
+                <!-- BR (A.2/D.3): Sortable column — Community -->
+                <th class="sortable-header" tabindex="0" role="button"
+                    @click="toggleSort('community')" @keydown="onSortKeydown('community', $event)">
+                  Community <span class="sort-arrow" aria-hidden="true">{{ sortArrow('community') }}</span>
                 </th>
-                <!-- BR (A.2): Sortable column — Role -->
-                <th class="sortable-header" @click="toggleSort('role')">
-                  User Role <span class="sort-arrow">{{ sortArrow('role') }}</span>
+                <!-- BR (A.2/D.3): Sortable column — Role -->
+                <th class="sortable-header" tabindex="0" role="button"
+                    @click="toggleSort('role')" @keydown="onSortKeydown('role', $event)">
+                  User Role <span class="sort-arrow" aria-hidden="true">{{ sortArrow('role') }}</span>
                 </th>
-                <!-- BR (A.2): Sortable column — Last Visit -->
-                <th class="sortable-header" @click="toggleSort('lastVisit')">
-                  Last Visit <span class="sort-arrow">{{ sortArrow('lastVisit') }}</span>
+                <!-- BR (A.2/D.3): Sortable column — Last Visit -->
+                <th class="sortable-header" tabindex="0" role="button"
+                    @click="toggleSort('lastVisit')" @keydown="onSortKeydown('lastVisit', $event)">
+                  Last Visit <span class="sort-arrow" aria-hidden="true">{{ sortArrow('lastVisit') }}</span>
                 </th>
               </tr>
             </thead>
@@ -307,3 +485,10 @@ onMounted(() => {
 
   </div>
 </template>
+
+<style scoped>
+.chart-wrap {
+  position: relative;
+  height: 280px;
+}
+</style>

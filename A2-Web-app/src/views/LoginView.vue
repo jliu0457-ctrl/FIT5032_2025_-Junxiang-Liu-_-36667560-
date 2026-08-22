@@ -171,8 +171,9 @@ function fillDemoAdmin() {
             </ul>
 
             <!-- Error Message (BR C.4: uses {{ }} interpolation) -->
-            <div v-if="errorMessage" class="alert alert-danger alert-dismissible fade show" role="alert">
-              <i class="bi bi-exclamation-triangle-fill"></i> {{ errorMessage }}
+            <!-- BR (E.3): role="alert" announces errors to screen readers -->
+            <div v-if="errorMessage" class="alert alert-danger alert-dismissible fade show" role="alert" aria-live="assertive">
+              <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {{ errorMessage }}
               <button type="button" class="btn-close" @click="errorMessage = ''" aria-label="Close"></button>
             </div>
 
@@ -182,7 +183,7 @@ function fillDemoAdmin() {
               <!-- Full Name (Register only) -->
               <div v-if="isRegistering" class="mb-3">
                 <label for="regName" class="form-label fw-medium">
-                  <i class="bi bi-person-fill"></i> Full Name
+                  <i class="bi bi-person-fill" aria-hidden="true"></i> Full Name
                 </label>
                 <input
                   id="regName"
@@ -190,12 +191,14 @@ function fillDemoAdmin() {
                   type="text"
                   class="form-control"
                   :class="{ 'input-error': fieldErrors.name }"
+                  :aria-invalid="fieldErrors.name ? 'true' : 'false'"
+                  :aria-describedby="fieldErrors.name ? 'regNameError' : undefined"
                   placeholder="Enter your full name"
                   autocomplete="name"
                 />
-                <!-- BR (B.1): Inline validation error -->
-                <div v-if="fieldErrors.name" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ fieldErrors.name }}
+                <!-- BR (B.1): Inline validation error (BR E.3: live region) -->
+                <div v-if="fieldErrors.name" id="regNameError" class="validation-error" role="alert">
+                  <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i> {{ fieldErrors.name }}
                 </div>
               </div>
 
@@ -209,13 +212,15 @@ function fillDemoAdmin() {
                   type="email"
                   class="form-control"
                   :class="{ 'input-error': fieldErrors.email }"
+                  :aria-invalid="fieldErrors.email ? 'true' : 'false'"
+                  :aria-describedby="fieldErrors.email ? 'loginEmailError' : undefined"
                   placeholder="Enter your email"
                   autocomplete="email"
                   required
                 />
-                <!-- BR (B.1): Inline validation error -->
-                <div v-if="fieldErrors.email" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ fieldErrors.email }}
+                <!-- BR (B.1): Inline validation error (BR E.3: live region) -->
+                <div v-if="fieldErrors.email" id="loginEmailError" class="validation-error" role="alert">
+                  <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i> {{ fieldErrors.email }}
                 </div>
               </div>
 
@@ -229,13 +234,15 @@ function fillDemoAdmin() {
                   type="password"
                   class="form-control"
                   :class="{ 'input-error': fieldErrors.password }"
+                  :aria-invalid="fieldErrors.password ? 'true' : 'false'"
+                  :aria-describedby="fieldErrors.password ? 'loginPasswordError' : undefined"
                   placeholder="Enter your password"
                   :autocomplete="isRegistering ? 'new-password' : 'current-password'"
                   required
                 />
-                <!-- BR (B.1): Inline validation error -->
-                <div v-if="fieldErrors.password" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ fieldErrors.password }}
+                <!-- BR (B.1): Inline validation error (BR E.3: live region) -->
+                <div v-if="fieldErrors.password" id="loginPasswordError" class="validation-error" role="alert">
+                  <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i> {{ fieldErrors.password }}
                 </div>
               </div>
 
@@ -250,12 +257,14 @@ function fillDemoAdmin() {
                   type="password"
                   class="form-control"
                   :class="{ 'input-error': fieldErrors.confirmPassword }"
+                  :aria-invalid="fieldErrors.confirmPassword ? 'true' : 'false'"
+                  :aria-describedby="fieldErrors.confirmPassword ? 'regConfirmPasswordError' : undefined"
                   placeholder="Re-enter your password"
                   autocomplete="new-password"
                 />
-                <!-- BR (B.1): Inline validation error -->
-                <div v-if="fieldErrors.confirmPassword" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ fieldErrors.confirmPassword }}
+                <!-- BR (B.1): Inline validation error (BR E.3: live region) -->
+                <div v-if="fieldErrors.confirmPassword" id="regConfirmPasswordError" class="validation-error" role="alert">
+                  <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i> {{ fieldErrors.confirmPassword }}
                 </div>
               </div>
 

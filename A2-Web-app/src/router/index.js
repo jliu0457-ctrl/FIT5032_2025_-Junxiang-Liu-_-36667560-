@@ -11,6 +11,7 @@ const HomeView = () => import('../views/HomeView.vue')
 const LoginView = () => import('../views/LoginView.vue')
 const PortalView = () => import('../views/PortalView.vue')
 const AdminView = () => import('../views/AdminView.vue')
+const ClinicsView = () => import('../views/ClinicsView.vue')
 
 const routes = [
   {
@@ -36,6 +37,12 @@ const routes = [
     name: 'Admin',
     component: AdminView,
     meta: { requiresAuth: true, requiredRole: 'Admin', title: 'Admin Dashboard — Indigenous Health Connect' }
+  },
+  {
+    path: '/clinics',
+    name: 'Clinics',
+    component: ClinicsView,
+    meta: { requiresAuth: false, title: 'Clinics & Services Map — Indigenous Health Connect' }
   },
   // Catch-all redirect to home
   {
