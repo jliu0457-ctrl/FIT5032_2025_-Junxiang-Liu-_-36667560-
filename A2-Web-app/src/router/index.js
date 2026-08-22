@@ -1,9 +1,10 @@
 // router/index.js — Vue Router Configuration with Navigation Guards
 // BR (C.1): Redirect unauthenticated users to /login
 // BR (C.2): Role-based access — non-Admin users blocked from /admin
+// BR (D.1): Guard waits for Firebase session restore (authReady) before checking
 
 import { createRouter, createWebHistory } from 'vue-router'
-import { state, loadSession } from '../stores/auth.js'
+import { state, authReady } from '../stores/auth.js'
 
 // Lazy-loaded view components for code-splitting
 const HomeView = () => import('../views/HomeView.vue')
@@ -52,10 +53,10 @@ const router = createRouter({
   }
 })
 
-// --- Global Navigation Guard (BR C.1 & C.2) ---
-router.beforeEach((to, from, next) => {
-  // Load persisted session on first navigation
-  loadSession()
+// --- Global Navigation Guard (BR C.1, C.2 & D.1) ---
+router.beforeEach(async (to, from, next) => {
+  // BR (D.1): wait for Firebase to restore the persisted session
+  await authReady
 
   // Update document title
   document.title = to.meta.title || 'Indigenous Health Connect'

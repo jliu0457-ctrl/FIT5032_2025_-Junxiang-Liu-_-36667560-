@@ -1,49 +1,29 @@
-<!-- PortalView.vue — My Health Portal (Wireframe Page 2)
-     BR (B.1): Dual form validation — non-empty check + date-not-in-past check
-     BR (B.2): Appointment data persisted to localStorage (ihc_bookings array)
+<!-- PortalView.vue — My Health Portal
+     BR (F.1-1): Calendar Booking — FullCalendar.io with conflict management.
+     BR (E.1): Bookings are validated & created by the AWS Lambda function
+               (custom business rules: clinic hours, 30-min slots, overlap detection).
+     BR (D.1): Booking data lives in Firestore (live via onSnapshot).
      BR (C.4): All text rendered via {{ }} interpolation -->
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { state, userName } from '../stores/auth.js'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { Modal } from 'bootstrap'
+import FullCalendar from '@fullcalendar/vue3'
+import dayGridPlugin from '@fullcalendar/daygrid'
+import timeGridPlugin from '@fullcalendar/timegrid'
+import interactionPlugin from '@fullcalendar/interaction'
+// FullCalendar styles vendored locally (v6.1.21 npm packages don't ship CSS;
+// the source files are SCSS, so they are compiled by Vite via sass)
+import '../assets/fc/packages/core/src/index.scss'
+import '../assets/fc/packages/daygrid/src/index.scss'
+import '../assets/fc/packages/timegrid/src/index.scss'
+import { collection, onSnapshot } from 'firebase/firestore'
+import { firebaseConfigured, auth, db } from '../firebase.js'
+import { userName } from '../stores/auth.js'
 
-// ============================================================
-// Appointment Booking Form (BR B.1)
-// ============================================================
+// --- Lambda API base URL (AWS Function URL, see README-SETUP.md) ---
+const LAMBDA_URL = import.meta.env.VITE_LAMBDA_URL || ''
 
-// --- Form model ---
-const appointment = ref({
-  date: '',
-  timeSlot: '',
-  practitioner: ''
-})
-
-// --- Validation errors (BR B.1) ---
-const errors = ref({
-  date: '',
-  timeSlot: '',
-  practitioner: ''
-})
-
-// --- Success message ---
-const successMessage = ref('')
-
-// --- Time slot options ---
-const timeSlots = [
-  '09:00 AM — 09:30 AM',
-  '09:30 AM — 10:00 AM',
-  '10:00 AM — 10:30 AM',
-  '10:30 AM — 11:00 AM',
-  '11:00 AM — 11:30 AM',
-  '11:30 AM — 12:00 PM',
-  '01:00 PM — 01:30 PM',
-  '01:30 PM — 02:00 PM',
-  '02:00 PM — 02:30 PM',
-  '02:30 PM — 03:00 PM',
-  '03:00 PM — 03:30 PM',
-  '03:30 PM — 04:00 PM'
-]
-
-// --- Practitioner options ---
+// --- Practitioner options (BR F.1-1) ---
 const practitioners = [
   'Dr. James Wunungmurra — General Practitioner',
   'Dr. Emily Chen — Women\'s Health',
@@ -52,108 +32,179 @@ const practitioners = [
   'Sarah Nguyen — Mental Health Practitioner'
 ]
 
-// ============================================================
-// BR (B.1): Dual Form Validation
-// ============================================================
-
-// --- Validation 1: Non-empty check ---
-function validateNonEmpty() {
-  let valid = true
-  errors.value = { date: '', timeSlot: '', practitioner: '' }
-
-  if (!appointment.value.date.trim()) {
-    errors.value.date = 'Please select an appointment date.'
-    valid = false
-  }
-  if (!appointment.value.timeSlot) {
-    errors.value.timeSlot = 'Please select a time slot.'
-    valid = false
-  }
-  if (!appointment.value.practitioner) {
-    errors.value.practitioner = 'Please select a practitioner.'
-    valid = false
-  }
-  return valid
-}
-
-// --- Validation 2: Date-not-in-past check (BR B.1) ---
-function validateDateNotPast() {
-  const selected = new Date(appointment.value.date)
-  const today = new Date()
-  // Reset time parts for fair date comparison
-  today.setHours(0, 0, 0, 0)
-  selected.setHours(0, 0, 0, 0)
-
-  if (selected < today) {
-    errors.value.date = 'Appointment date cannot be in the past. Please choose today or a future date.'
-    return false
-  }
-  return true
-}
-
-// --- Combined validation (BR B.1) ---
-function validateForm() {
-  const nonEmpty = validateNonEmpty()
-  const notPast = validateDateNotPast()
-  return nonEmpty && notPast
+// --- Color per practitioner (calendar events + legend) ---
+const practitionerColors = ['#2d6a4f', '#7b2cbf', '#d4a373', '#1d3557', '#e07a5f']
+function colorFor(p) {
+  return practitionerColors[practitioners.indexOf(p) % practitionerColors.length]
 }
 
 // ============================================================
-// BR (B.2): Booking persistence to LocalStorage
+// BR (D.1): Bookings live from Firestore (localStorage fallback
+// until Firebase is configured — local demo mode)
 // ============================================================
-
-// --- Booking history list ---
 const bookings = ref([])
+let unsubscribeBookings = null
 
-// --- Load existing bookings from localStorage (BR B.2) ---
-function loadBookings() {
+function loadLocalBookings() {
   const stored = localStorage.getItem('ihc_bookings')
   if (stored) {
     try {
       bookings.value = JSON.parse(stored)
-    } catch (e) {
+    } catch {
       bookings.value = []
     }
   }
 }
 
-// --- Submit appointment (BR B.2) ---
-function submitAppointment() {
-  successMessage.value = ''
+onMounted(() => {
+  if (firebaseConfigured) {
+    unsubscribeBookings = onSnapshot(collection(db, 'bookings'), snapshot => {
+      bookings.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+    })
+  } else {
+    loadLocalBookings()
+  }
+})
+onUnmounted(() => {
+  if (unsubscribeBookings) unsubscribeBookings()
+})
 
-  // Run dual validation (BR B.1)
-  if (!validateForm()) {
+// --- Map Firestore bookings to FullCalendar events ---
+const calendarEvents = computed(() =>
+  bookings.value.map(b => ({
+    id: b.id,
+    title: b.practitioner,
+    start: `${b.date}T${b.startTime}:00`,
+    end: `${b.date}T${b.endTime}:00`,
+    backgroundColor: colorFor(b.practitioner),
+    borderColor: colorFor(b.practitioner)
+  }))
+)
+
+// ============================================================
+// BR (F.1-1): Slot selection + booking modal
+// ============================================================
+const selectedRange = ref(null)      // { date, startTime, endTime }
+const selectedPractitioner = ref('')
+const bookingError = ref('')
+const bookingBusy = ref(false)
+const successMessage = ref('')
+
+const modalEl = ref(null)
+let modalInstance = null
+
+onMounted(() => {
+  if (modalEl.value) modalInstance = new Modal(modalEl.value)
+})
+
+function pad(n) {
+  return String(n).padStart(2, '0')
+}
+
+// FullCalendar select callback — user clicked/dragged an empty slot
+function handleSelect(selectInfo) {
+  const { start, end } = selectInfo
+  selectedRange.value = {
+    date: `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`,
+    startTime: `${pad(start.getHours())}:${pad(start.getMinutes())}`,
+    endTime: `${pad(end.getHours())}:${pad(end.getMinutes())}`
+  }
+  selectedPractitioner.value = practitioners[0]
+  bookingError.value = ''
+  if (modalInstance) modalInstance.show()
+  selectInfo.view.calendar.unselect() // clear the selection highlight
+}
+
+// Booking is only allowed in the time-grid views (week/day).
+// NOTE: FullCalendar may pass an info object whose `view` is not yet set
+// (e.g. at drag-start) — treat that as allowed instead of crashing.
+function selectAllow(info) {
+  return !info.view || info.view.type !== 'dayGridMonth'
+}
+
+// --- Submit booking: Lambda function (BR E.1) or local demo mode ---
+async function confirmBooking() {
+  bookingBusy.value = true
+  bookingError.value = ''
+  try {
+    // Local demo mode: lightweight client-side conflict check
+    if (!firebaseConfigured) {
+      const r = selectedRange.value
+      const conflict = bookings.value.find(b =>
+        b.practitioner === selectedPractitioner.value &&
+        b.date === r.date && b.startTime < r.endTime && r.startTime < b.endTime
+      )
+      if (conflict) {
+        bookingError.value = `This practitioner already has a booking from ${conflict.startTime} to ${conflict.endTime} on ${r.date}.`
+        return
+      }
+      bookings.value.unshift({
+        id: Date.now(),
+        date: r.date,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        practitioner: selectedPractitioner.value
+      })
+      localStorage.setItem('ihc_bookings', JSON.stringify(bookings.value))
+      if (modalInstance) modalInstance.hide()
+      successMessage.value = 'Your appointment has been booked successfully!'
+      setTimeout(() => { successMessage.value = '' }, 5000)
+      return
+    }
+
+    if (!LAMBDA_URL) {
+      bookingError.value = 'Booking service URL is not configured (set VITE_LAMBDA_URL). See README-SETUP.md.'
+      return
+    }
+    // Firebase ID token proves identity to the Lambda function (BR C.4)
+    const idToken = await auth.currentUser.getIdToken()
+    const res = await fetch(`${LAMBDA_URL}/booking`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`
+      },
+      body: JSON.stringify({ ...selectedRange.value, practitioner: selectedPractitioner.value })
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) {
+      bookingError.value = data.message || 'Booking failed. Please try again.'
+      return
+    }
+    if (modalInstance) modalInstance.hide()
+    successMessage.value = 'Your appointment has been booked successfully!'
+    setTimeout(() => { successMessage.value = '' }, 5000)
+  } catch {
+    bookingError.value = 'Network error: unable to reach the booking service. Please try again.'
+  } finally {
+    bookingBusy.value = false
+  }
+}
+
+// --- Cancel a booking: Lambda function (BR E.1) or local demo mode ---
+async function cancelBooking(id) {
+  if (!window.confirm('Cancel this appointment?')) return
+
+  // Local demo mode
+  if (!firebaseConfigured) {
+    bookings.value = bookings.value.filter(b => b.id !== id)
+    localStorage.setItem('ihc_bookings', JSON.stringify(bookings.value))
     return
   }
 
-  // Create booking record
-  const newBooking = {
-    id: Date.now(),
-    date: appointment.value.date,
-    timeSlot: appointment.value.timeSlot,
-    practitioner: appointment.value.practitioner,
-    bookedBy: state.currentUser?.name || 'Unknown',
-    bookedByEmail: state.currentUser?.email || '',
-    createdAt: new Date().toISOString()
+  try {
+    const idToken = await auth.currentUser.getIdToken()
+    const res = await fetch(`${LAMBDA_URL}/booking/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${idToken}` }
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) {
+      alert(data.message || 'Cancel failed. Please try again.')
+    }
+  } catch {
+    alert('Network error: unable to cancel the booking.')
   }
-
-  // Save to localStorage array (BR B.2)
-  bookings.value.unshift(newBooking)
-  localStorage.setItem('ihc_bookings', JSON.stringify(bookings.value))
-
-  // Show success and reset form
-  successMessage.value = 'Your appointment has been booked successfully!'
-  appointment.value = { date: '', timeSlot: '', practitioner: '' }
-  errors.value = { date: '', timeSlot: '', practitioner: '' }
-
-  // Auto-dismiss success message after 5s
-  setTimeout(() => { successMessage.value = '' }, 5000)
-}
-
-// --- Delete a booking ---
-function deleteBooking(id) {
-  bookings.value = bookings.value.filter(b => b.id !== id)
-  localStorage.setItem('ihc_bookings', JSON.stringify(bookings.value))
 }
 
 // --- Format date for display ---
@@ -162,12 +213,29 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-AU', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-// --- Today's date for date input min attribute ---
-const todayStr = computed(() => new Date().toISOString().split('T')[0])
-
-onMounted(() => {
-  loadBookings()
-})
+// --- FullCalendar options (BR F.1-1) ---
+const calendarOptions = {
+  plugins: [dayGridPlugin, timeGridPlugin, interactionPlugin],
+  initialView: 'timeGridWeek',
+  headerToolbar: {
+    left: 'prev,next today',
+    center: 'title',
+    right: 'dayGridMonth,timeGridWeek,timeGridDay'
+  },
+  slotMinTime: '09:00:00',   // clinic hours (matches Lambda business rules)
+  slotMaxTime: '16:00:00',
+  slotDuration: '00:30:00',
+  allDaySlot: false,
+  selectable: true,
+  selectMirror: true,
+  selectAllow,
+  select: handleSelect,
+  nowIndicator: true,
+  // NOTE: fixed height is required — with height:'auto' the time-grid
+  // views (week/day) collapse to zero height and no slots are clickable
+  height: 650,
+  events: calendarEvents
+}
 </script>
 
 <template>
@@ -181,7 +249,7 @@ onMounted(() => {
         </h2>
         <p class="text-muted mb-0">Welcome back, {{ userName }}. Manage your appointments here.</p>
       </div>
-      <!-- Placeholder export buttons UI (BR req for Page 2) -->
+      <!-- Export buttons (BR E.4 — enabled in Phase 3) -->
       <div class="d-flex gap-2">
         <button class="btn btn-outline-secondary btn-sm" disabled title="CSV export — coming soon">
           <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
@@ -194,7 +262,7 @@ onMounted(() => {
 
     <div class="row g-4">
 
-      <!-- ====== Left Column: Booking Form ====== -->
+      <!-- ====== Left Column: Booking Calendar (BR F.1-1) ====== -->
       <div class="col-12 col-lg-7">
         <div class="card shadow-sm">
           <div class="card-header text-white fw-semibold" style="background-color: var(--ihc-primary);">
@@ -208,71 +276,22 @@ onMounted(() => {
               <button type="button" class="btn-close" @click="successMessage = ''" aria-label="Close"></button>
             </div>
 
-            <!-- Booking Form -->
-            <form @submit.prevent="submitAppointment" novalidate>
+            <p class="small text-muted mb-3">
+              <i class="bi bi-info-circle-fill me-1"></i>
+              Click or drag an empty slot in the week/day view to book.
+              Clinic hours are 9:00 AM – 4:00 PM, 30-minute slots.
+            </p>
 
-              <!-- Date Input (BR B.1: validated for non-empty + not-in-past) -->
-              <div class="mb-3">
-                <label for="apptDate" class="form-label fw-medium">
-                  <i class="bi bi-calendar3"></i> Appointment Date
-                </label>
-                <input
-                  id="apptDate"
-                  v-model="appointment.date"
-                  type="date"
-                  class="form-control"
-                  :class="{ 'input-error': errors.date }"
-                  :min="todayStr"
-                />
-                <!-- BR (B.1): Error messages use {{ }} interpolation (BR C.4) -->
-                <div v-if="errors.date" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ errors.date }}
-                </div>
-              </div>
+            <!-- FullCalendar (BR F.1-1) -->
+            <FullCalendar :options="calendarOptions" />
 
-              <!-- Time Slot Input (BR B.1: validated for non-empty) -->
-              <div class="mb-3">
-                <label for="apptTime" class="form-label fw-medium">
-                  <i class="bi bi-clock"></i> Time Slot
-                </label>
-                <select
-                  id="apptTime"
-                  v-model="appointment.timeSlot"
-                  class="form-select"
-                  :class="{ 'input-error': errors.timeSlot }"
-                >
-                  <option value="" disabled>— Select a time slot —</option>
-                  <option v-for="slot in timeSlots" :key="slot" :value="slot">{{ slot }}</option>
-                </select>
-                <div v-if="errors.timeSlot" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ errors.timeSlot }}
-                </div>
-              </div>
-
-              <!-- Practitioner Input (BR B.1: validated for non-empty) -->
-              <div class="mb-4">
-                <label for="apptPractitioner" class="form-label fw-medium">
-                  <i class="bi bi-person-badge"></i> Practitioner
-                </label>
-                <select
-                  id="apptPractitioner"
-                  v-model="appointment.practitioner"
-                  class="form-select"
-                  :class="{ 'input-error': errors.practitioner }"
-                >
-                  <option value="" disabled>— Select a practitioner —</option>
-                  <option v-for="prac in practitioners" :key="prac" :value="prac">{{ prac }}</option>
-                </select>
-                <div v-if="errors.practitioner" class="validation-error">
-                  <i class="bi bi-exclamation-circle-fill"></i> {{ errors.practitioner }}
-                </div>
-              </div>
-
-              <button type="submit" class="btn btn-lg w-100 text-white fw-semibold"
-                      style="background-color: var(--ihc-primary);">
-                <i class="bi bi-check-lg"></i> Confirm Booking
-              </button>
-            </form>
+            <!-- Practitioner colour legend -->
+            <div class="d-flex flex-wrap gap-3 mt-3">
+              <span v-for="p in practitioners" :key="p" class="small d-inline-flex align-items-center gap-1">
+                <span class="legend-dot" :style="{ backgroundColor: colorFor(p) }" aria-hidden="true"></span>
+                {{ p }}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -280,9 +299,9 @@ onMounted(() => {
       <!-- ====== Right Column: AI Assistant + Extra ====== -->
       <div class="col-12 col-lg-5">
 
-        <!-- AI Assistant Placeholder (BR req for Page 2) -->
+        <!-- AI Assistant Placeholder (GenAI comes in a later phase) -->
         <div class="card shadow-sm mb-4">
-          <div class="card-header text-white fw-semibold" style="background-color: var(--ihc-accent);">
+          <div class="card-header fw-semibold" style="background-color: var(--ihc-accent); color: var(--ihc-text);">
             <i class="bi bi-robot me-2"></i>AI Health Assistant
           </div>
           <div class="card-body">
@@ -309,7 +328,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- ====== My Booking History (BR B.2: persisted in localStorage) ====== -->
+    <!-- ====== My Booking History (BR D.1: live from Firestore) ====== -->
     <div class="card shadow-sm mt-4">
       <div class="card-header text-white fw-semibold" style="background-color: var(--ihc-primary);">
         <i class="bi bi-clock-history me-2"></i>My Appointment History
@@ -319,10 +338,10 @@ onMounted(() => {
         <!-- Empty state -->
         <div v-if="bookings.length === 0" class="text-center text-muted py-4">
           <i class="bi bi-calendar-x fs-1 d-block mb-2"></i>
-          <p class="mb-0">No appointments booked yet. Use the form above to schedule your first appointment.</p>
+          <p class="mb-0">No appointments booked yet. Use the calendar above to schedule your first appointment.</p>
         </div>
 
-        <!-- Booking list table (BR B.2: data persists across refreshes) -->
+        <!-- Booking list table -->
         <div v-else class="table-responsive">
           <table class="table table-hover align-middle">
             <thead class="table-light">
@@ -336,10 +355,10 @@ onMounted(() => {
             <tbody>
               <tr v-for="booking in bookings" :key="booking.id">
                 <td>{{ formatDate(booking.date) }}</td>
-                <td>{{ booking.timeSlot }}</td>
+                <td>{{ booking.startTime }} – {{ booking.endTime }}</td>
                 <td>{{ booking.practitioner }}</td>
                 <td>
-                  <button class="btn btn-outline-danger btn-sm" @click="deleteBooking(booking.id)"
+                  <button class="btn btn-outline-danger btn-sm" @click="cancelBooking(booking.id)"
                           title="Cancel this appointment">
                     <i class="bi bi-trash-fill"></i> Cancel
                   </button>
@@ -351,5 +370,68 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- ====== Booking Confirmation Modal (BR F.1-1) ====== -->
+    <div class="modal fade" ref="modalEl" tabindex="-1" aria-labelledby="bookingModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="bookingModalLabel">
+              <i class="bi bi-calendar-check me-2"></i>Confirm Appointment
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-3" v-if="selectedRange">
+              <i class="bi bi-clock me-1"></i>
+              {{ formatDate(selectedRange.date) }},
+              {{ selectedRange.startTime }} – {{ selectedRange.endTime }}
+            </p>
+            <div class="mb-3">
+              <label for="modalPractitioner" class="form-label fw-medium">
+                <i class="bi bi-person-badge"></i> Practitioner
+              </label>
+              <select id="modalPractitioner" v-model="selectedPractitioner" class="form-select">
+                <option v-for="prac in practitioners" :key="prac" :value="prac">{{ prac }}</option>
+              </select>
+            </div>
+            <!-- Conflict / validation errors from the Lambda function (BR E.1) -->
+            <div v-if="bookingError" class="alert alert-danger" role="alert">
+              <i class="bi bi-exclamation-triangle-fill"></i> {{ bookingError }}
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn text-white fw-semibold"
+                    style="background-color: var(--ihc-primary);"
+                    :disabled="bookingBusy"
+                    @click="confirmBooking">
+              <span v-if="bookingBusy" class="spinner-border spinner-border-sm me-2" role="status"></span>
+              {{ bookingBusy ? 'Booking...' : 'Confirm Booking' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
+
+<style scoped>
+.legend-dot {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+}
+
+/* FullCalendar timegrid fix: force every 30-min slot row to the same height.
+   Otherwise the table's height:100% pushes all leftover vertical space into
+   the LAST row (the 15:30–16:00 slot), which stretches it into a huge
+   unclickable blank area. */
+:deep(.fc .fc-timegrid-slots > table) {
+  height: auto;
+}
+:deep(.fc .fc-timegrid-slots tr) {
+  height: 2.75em;
+}
+</style>

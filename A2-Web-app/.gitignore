@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Secrets & local config
+.env
+lambda/*.json
+lambda/function.zip
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

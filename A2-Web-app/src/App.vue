@@ -4,10 +4,18 @@
      BR (C.4): All user-generated text rendered via {{ }} interpolation (no v-html) -->
 <script setup>
 import AppNavbar from './components/AppNavbar.vue'
+import { firebaseConfigured } from './firebase.js'
 </script>
 
 <template>
   <div class="d-flex flex-column min-vh-100">
+    <!-- Local demo mode banner (shown until Firebase is configured in .env) -->
+    <div v-if="!firebaseConfigured" class="demo-banner" role="status">
+      <i class="bi bi-cone-striped me-1"></i>
+      Local demo mode — Firebase is not configured yet, data is stored in this browser only.
+      Fill in <code>.env</code> (see README-SETUP.md, Step 1) and restart to enable Firebase Auth + Firestore.
+    </div>
+
     <!-- Global Navigation Bar -->
     <AppNavbar />
 
@@ -28,5 +36,12 @@ import AppNavbar from './components/AppNavbar.vue'
 <style scoped>
 main {
   padding-top: 0;
+}
+.demo-banner {
+  background-color: #fff3cd;
+  color: #664d03;
+  text-align: center;
+  padding: 0.4rem 1rem;
+  font-size: 0.85rem;
 }
 </style>
